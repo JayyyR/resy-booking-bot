@@ -40,6 +40,9 @@ object ResyBookingBot{
 
     system.scheduler.scheduleOnce(millisUntilStart millis)(bookReservationWorkflow)
   }
+  
+  //bookReservationWorkflow
+  //To test bot without clock comment out system.scheduler.scheduleOnce(millisUntilStart millis)(bookReservationWorkflow) and uncomment bookReservationWorkflow.
 
   def bookReservationWorkflow = {
     println(s"Attempting to snipe reservation at ${DateTime.now}")
