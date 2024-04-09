@@ -1,0 +1,32 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [ "Scala CI" ]
+    types: [ completed ]
+    branches: [ master ]
+
+concurrency: release
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4.1.1
+        with:
+          fetch-depth: 0
+      - name: Set up JDK 19
+        uses: actions/setup-java@v4.0.0
+        with:
+          java-version: '19'
+          distribution: 'temurin'
+          cache: sbt
+      - uses: coursier/cache-action@v6.4.4
+      - uses: auto-it/setup-auto@v1
+      - name: Create Release
+        run: auto shipit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

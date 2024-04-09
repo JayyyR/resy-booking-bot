@@ -1,0 +1,55 @@
+name: Scala CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  security-events: write
+  checks: write
+
+jobs:
+  formatting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4.1.1
+      - uses: AvaPL/scalafmt-native-formatter@v0.1.2
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4.1.1
+      - name: Set up JDK 19
+        uses: actions/setup-java@v4.0.0
+        with:
+          java-version: '19'
+          distribution: 'temurin'
+          cache: sbt
+      - name: Resolve dependencies
+        run: sbt update
+      - name: Run Scalafix
+        run: sbt 'scalafixAll --check'
+      - name: Build/Test/Coverage
+        run: sbt coverage test coverageReport
+      - name: Publish JUnit Test Report
+        if: always()
+        uses: mikepenz/action-junit-report@v4.0.3
+        with:
+          report_paths: "**/target/test-reports/*.xml"
+      - name: Upload dependency graph
+        uses: scalacenter/sbt-dependency-submission@v2
+      - name: Upload coverage report to Codecov
+        uses: codecov/codecov-action@v3.1.4
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}

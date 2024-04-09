@@ -1,27 +1,54 @@
 package com.resy
 
-object BookingDetails {
-  // Your user profile Auth Token
-  val auth_token: String = CustomDetails.auth_token
+import java.time._
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+import java.util.TimeZone
+import scala.concurrent.duration._
 
-  // Your user profile API key
-  val api_key: String = CustomDetails.api_key
+final case class Venue(
+  id: String,
+  hourOfDayToStartBooking: Int = 0,
+  advance: FiniteDuration = 7.days,
+  diningTypes: List[String] = List.empty,
+  info: Option[String] = None,
+  timeZone: TimeZone = TimeZone.getTimeZone("America/New_York")
+)
 
-  // RestaurantId where you want to make the reservation
-  val venueId: String = CustomDetails.venueId
+@SuppressWarnings(Array("scalafix:MissingFinal"))
+case class Preference(
+  time: LocalTime,
+  diningType: Option[String] = None
+)
 
-  // YYYY-MM-DD of reservation
-  val day: String = CustomDetails.pref_day
+final case class BookingDetails(
+  authToken: String,
+  apiKey: String,
+  venue: Venue,
+  date: LocalDate,
+  preferences: List[Preference],
+  partySize: Int,
+  retryTimeout: FiniteDuration,
+  wakeAdjustment: FiniteDuration
+) {
 
-  //indoor or outdoor etc. Should match the type exactly on the resy venue (case doesn't matter). Leave blank if you don't care or don't now
-  val dining_type: String = CustomDetails.dining_type
+  val day: String = date.format(DateTimeFormatter.ISO_DATE)
 
-  // Seq of YYYY-MM-DD HH:MM:SS times of reservations in military time format
-  val times: Seq[String] = CustomDetails.pref_times
+  def inBookingWindow(
+    leadTime: FiniteDuration,
+    clock: Clock = Clock.systemDefaultZone()
+  ): Boolean =
+    bookingWindowStart(leadTime).toInstant.getEpochSecond <= clock.instant().getEpochSecond
 
-  // Size of party
-  val partySize: String = CustomDetails.partySize
+  def bookingWindowStart(leadTime: FiniteDuration): ZonedDateTime =
+    date
+      .atStartOfDay(venue.timeZone.toZoneId)
+      .minus(leadTime.toDays, ChronoUnit.DAYS)
+      .plusHours(venue.hourOfDayToStartBooking)
 
-  //Hour of Day to Wake Up the Bot and start searching - In Military Time: 0-23
-  val hourOfDayToStartBooking: Int = CustomDetails.hourOfDayToStartBooking
+  def secondsToBookingWindowStart(
+    leadTime: FiniteDuration,
+    clock: Clock = Clock.systemDefaultZone()
+  ): FiniteDuration =
+    (bookingWindowStart(leadTime).toEpochSecond - clock.instant().getEpochSecond).seconds
 }

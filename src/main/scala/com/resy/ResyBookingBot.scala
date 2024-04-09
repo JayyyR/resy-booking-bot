@@ -1,80 +1,84 @@
 package com.resy
 
-import akka.actor.ActorSystem
-import com.resy.BookReservationWorkflow._
-import com.resy.BookingDetails.hourOfDayToStartBooking
-import org.joda.time.DateTime
+import com.typesafe.scalalogging.StrictLogging
+import org.apache.commons.lang3.time.DurationFormatUtils
+import org.apache.pekko.actor.ActorSystem
 import play.api.libs.json._
+import pureconfig._
+import pureconfig.generic.auto._
 
+import java.time.ZonedDateTime
+import java.time.temporal.ChronoUnit
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration._
+import scala.concurrent.{Await, Future, TimeoutException}
 import scala.util.{Failure, Success, Try}
-import scala.language.postfixOps
 
-object ResyBookingBot{
+object ResyBookingBot extends App with StrictLogging {
 
-  def main(args: Array[String]): Unit = {
-    println("Starting Resy Booking Bot")
+  implicit private val config: BookingDetails =
+    ConfigSource.default.at("booking-details").loadOrThrow[BookingDetails]
 
-    val system = ActorSystem("System")
-    val rightNow = DateTime.now.hourOfDay().get
-    val hourToStartChecking = hourOfDayToStartBooking
+  logger.info(s"Starting Resy Booking Bot with config: $config")
 
-    val startCheckTime =
-      if (rightNow < hourToStartChecking) {
-        DateTime.now.withTimeAtStartOfDay().plusHours(hourToStartChecking).getMillis
-      } else {
-        DateTime.now.withTimeAtStartOfDay().plusDays(1).plusHours(hourToStartChecking).getMillis
-      }
+  private val system = ActorSystem()
 
-    val millisUntilStart = startCheckTime - DateTime.now.getMillis - 1000
-    val hoursRemaining = millisUntilStart / 1000 / 60 / 60
-    val minutesRemaining = millisUntilStart / 1000 / 60 - hoursRemaining * 60
-    val secondsRemaining =
-      millisUntilStart / 1000 - hoursRemaining * 60 * 60 - minutesRemaining * 60
+  private val workflow = BookReservationWorkflow(config)
 
-    println(s"Current time: ${DateTime.now}")
-    println(
-      s"Sleeping for $hoursRemaining hours, $minutesRemaining minutes and $secondsRemaining seconds"
-    )
+  private def bookReservationWorkflow(): Unit = {
+    logger.info(s"Attempting to snipe reservation")
 
-    system.scheduler.scheduleOnce(millisUntilStart millis)(bookReservationWorkflow)
+    val result: Future[Option[String]] = for {
+      findResResp    <- workflow.retryFindReservation
+      resDetailsResp <- workflow.getReservationDetails(findResResp)
+      bookResResp    <- workflow.bookReservation(resDetailsResp)
+    } yield {
+      val bookDetails = Json.parse(bookResResp)
+      logger.info(s"Booking Response: $bookDetails")
+      (bookDetails \\ "reservation_id").headOption.map(_.toString)
+    }
+
+    Try(Await.result(result, config.retryTimeout)) match {
+      case Failure(_: TimeoutException) =>
+        logger.error(s"Failed to snipe - Retry period exceeded")
+      case Failure(f: ReservationAlreadyMade) =>
+        logger.error(
+          s"Failed to snipe - Reservation already in place! On ${f.date} at ${f.time} id: ${f.id}"
+        )
+      case Failure(t) =>
+        logger.error(s"Failed to snipe - ${t.getMessage}", t)
+      case Success(Some(token)) =>
+        logger.info(s"Successfully sniped reservation")
+        logger.info(s"ReservationId: $token")
+      case Success(None) =>
+        logger.info("Failed to snipe - reservation already exists?")
+    }
+
+    logger.info("Shutting down Resy Booking Bot")
+
+    ResyApiWrapper.shutdown()
+
+    System.exit(0)
   }
 
-  def bookReservationWorkflow = {
-    println(s"Attempting to snipe reservation at ${DateTime.now}")
+  workflow.getLeadTime.map { leadTime =>
+    if (config.inBookingWindow(leadTime)) {
+      logger.info("Within booking window for venue - attempting immediate reservation")
+      bookReservationWorkflow()
+    } else {
+      val durationToSleep: FiniteDuration =
+        config.secondsToBookingWindowStart(leadTime) - config.wakeAdjustment
+      logger.info(
+        // format: off
+        s"""
+           |  Booking window is $leadTime available at ${config.venue.hourOfDayToStartBooking} ${config.venue.timeZone.getDisplayName}
+           |  For the current booking, we will wake ${config.wakeAdjustment} before ${config.bookingWindowStart(leadTime)}
+           |  Local time is currently                                ${ZonedDateTime.now().truncatedTo(ChronoUnit.MINUTES)}
+           |  Calculated sleep period of ${DurationFormatUtils.formatDuration(durationToSleep.toMillis, "d' days 'HH:mm:ss")}""".stripMargin
+        // format: on
+      )
 
-    //Try to get configId of the time slot for 10 seconds
-    val findResResp = retryFindReservation(DateTime.now.plusSeconds(30).getMillis)
-
-    //Try to book the reservation
-    for {
-      resDetailsResp <- getReservationDetails(findResResp)
-      bookResResp    <- bookReservation(resDetailsResp)
-    } {
-
-      val bookDetails = Json.parse(bookResResp)
-      println(s"${DateTime.now} URL Response - booking: $bookDetails")
-
-
-      val resyToken =
-        Try(
-          (Json.parse(bookResResp) \ "resy_token").get.toString
-            .stripPrefix("\"")
-            .stripSuffix("\"")
-        )
-
-      resyToken match {
-        case Success(token) =>
-          println(s"Successfully sniped reservation at ${DateTime.now}")
-          println(s"Resy token is $token")
-        case Failure(error) =>
-          println(s"Couldn't sniped reservation at ${DateTime.now}")
-          println(s"Error message is $error")
-      }
-
-      println("Shutting down Resy Booking Bot at " + DateTime.now)
-      System.exit(0)
+      system.scheduler.scheduleOnce(durationToSleep)(bookReservationWorkflow())
     }
   }
 }

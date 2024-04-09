@@ -1,0 +1,9 @@
+{
+  "plugins": [
+    "sbt",
+    "released"
+  ],
+  "shipit": {
+    "noChangelog": true
+  }
+}
